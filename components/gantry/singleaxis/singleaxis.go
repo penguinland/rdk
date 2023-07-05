@@ -450,9 +450,7 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 		d = 1
 		wrongPin = 0
 	}
-
-	err := g.motor.GoFor(ctx, d*g.rpm, 0, nil)
-	if err != nil {
+	if err := g.motor.GoFor(ctx, d*g.rpm, 0, nil); err != nil {
 		return 0, err
 	}
 
