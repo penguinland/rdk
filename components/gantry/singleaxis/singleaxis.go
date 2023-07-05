@@ -411,34 +411,35 @@ func (g *singleAxis) gantryToMotorSpeeds(speeds float64) float64 {
 func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 	// Start watching for interrupts on the pin
 	interruptPinName := g.limitSwitchPins[pin]
-	var events chan board.Tick
-	if interruptPin, success := board.DigitalInterruptByName(interruptPinName); success {
-		interruptPin.AddCallback(events)
-		// Despite interruptPin going out of scope at the end of the if statement, this gets
-		// deferred until the end of the entire function. So, we've still got the callback
-		// registered in the select statement below.
-		defer interruptPin.RemoveCallback(events)
-
-		// Make sure we're not already on the limit switch! If we are, the next interrupt will be
-		// us moving *off* the limit switch, which likely means we've moved past it into the
-		// dangerous zone. To get the current value of the switch, don't use interruptPin.Value():
-		// that's the total number of times it has hit an edge, not whether it's currently high or
-		// low. Instead, we want to get the GPIO value of the pin.
-		if gpioPin, err := board.GPIOPinByName(interruptPinName); err == nil {
-			if value, err := gpioPin.Get(ctx, map[string]interface{}{}); err == nil {
-				if value {
-					// The limit switch is already triggered! Instead of moving the motor until the
-					// switch is triggered, we should return immediately.
-					return g.motor.Position(ctx, nil)
-				}
-			} else {
-				return 0, err
-			}
-		} else {
-			return 0, err
-		}
-	} else {
+	interruptPin, success := board.DigitalInterruptByName(interruptPinName)
+	if !success {
 		return 0, fmt.Errorf("limit switch %s does not act like a digital interrupt", interruptPinName)
+	}
+
+	var events chan board.Tick
+	interruptPin.AddCallback(events)
+	// Despite interruptPin going out of scope at the end of the if statement, this gets
+	// deferred until the end of the entire function. So, we've still got the callback
+	// registered in the select statement below.
+	defer interruptPin.RemoveCallback(events)
+
+	// Make sure we're not already on the limit switch! If we are, the next interrupt will be
+	// us moving *off* the limit switch, which likely means we've moved past it into the
+	// dangerous zone. To get the current value of the switch, don't use interruptPin.Value():
+	// that's the total number of times it has hit an edge, not whether it's currently high or
+	// low. Instead, we want to get the GPIO value of the pin.
+	gpioPin, err := board.GPIOPinByName(interruptPinName)
+	if err != nil {
+		return 0, err
+	}
+	value, err := gpioPin.Get(ctx, map[string]interface{}{})
+	if err != nil {
+		return 0, err
+	}
+	if value {
+		// The limit switch is already triggered! Instead of moving the motor until the
+		// switch is triggered, we should return immediately.
+		return g.motor.Position(ctx, nil)
 	}
 
 	defer utils.UncheckedErrorFunc(func() error {
