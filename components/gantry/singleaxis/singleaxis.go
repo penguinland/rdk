@@ -461,8 +461,8 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 		}
 	}
 	// Short pause after stopping to increase the precision of the position of each limit switch
-	position, err := g.motor.Position(ctx, nil)
 	time.Sleep(250 * time.Millisecond)
+	position, err := g.motor.Position(ctx, nil)
 	return position, err
 }
 
