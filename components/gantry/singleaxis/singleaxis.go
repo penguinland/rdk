@@ -413,7 +413,8 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 	interruptPinName := g.limitSwitchPins[pin]
 	interruptPin, success := board.DigitalInterruptByName(interruptPinName)
 	if !success {
-		return 0, fmt.Errorf("limit switch %s does not act like a digital interrupt", interruptPinName)
+		return 0, fmt.Errorf("limit switch %s does not act like a digital interrupt",
+		                     interruptPinName)
 	}
 
 	var events chan board.Tick
