@@ -405,7 +405,23 @@ func (g *singleAxis) gantryToMotorSpeeds(speeds float64) float64 {
 	return r
 }
 
+// testLimit moves the gantry towards the indicated limit switch, and returns the position of the
+// motor when it arrives. If it hasn't found the limit switch after 15 seconds, it stops and
+// returns an error instead.
 func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
+	// Start watching for interrupts on the pin
+	interruptPinName := g.limitSwitchPins[pin]
+	var events chan board.Tick
+	if interruptPin, success := board.DigitalInterruptByName(interruptPinName); success {
+		interruptPin.AddCallback(events)
+		// Despite interruptPin going out of scope at the end of the if statement, this gets
+		// deferred until the end of the entire function. So, we've still got the callback
+		// registered in the select statement below.
+		defer interruptPin.RemoveCallback(events)
+	} else {
+		return fmt.Errorf("limit switch %s does not act like a digital interrupt", interruptPinName)
+	}
+
 	defer utils.UncheckedErrorFunc(func() error {
 		return g.motor.Stop(ctx, nil)
 	})
@@ -421,49 +437,23 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 		return 0, err
 	}
 
-	start := time.Now()
-	for {
-		hit, err := g.limitHit(ctx, pin)
-		if err != nil {
+	// Give up after a sufficient amount of time.
+	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 15 * time.Second)
+	defer timeoutCancel() // Clean up when we're done, even without waiting 15 seconds.
+
+	select {
+	case <-ctx.Done():
+		return 0, errors.New("context cancelled while testing limit")
+	case <-timeoutCtx.Done():
+		return 0, errors.New("timed out while testing limit")
+	case <-events:
+		if err = g.motor.Stop(ctx, nil); err != nil {
 			return 0, err
 		}
-		if hit {
-			err = g.motor.Stop(ctx, nil)
-			if err != nil {
-				return 0, err
-			}
-			break
-		}
-
-		// check if the wrong limit switch was hit
-		wrongHit, err := g.limitHit(ctx, wrongPin)
-		if err != nil {
-			return 0, err
-		}
-		if wrongHit {
-			err = g.motor.Stop(ctx, nil)
-			if err != nil {
-				return 0, err
-			}
-			return 0, errors.Errorf(
-				"expected limit switch %v but hit limit switch %v, try switching the order in the config",
-				pin,
-				wrongPin)
-		}
-
-		elapsed := start.Sub(start)
-		if elapsed > (time.Second * 15) {
-			return 0, errors.New("gantry timed out testing limit")
-		}
-
-		if !utils.SelectContextOrWait(ctx, time.Millisecond*10) {
-			return 0, ctx.Err()
-		}
+		// Short pause after stopping to increase the precision of the position of each limit switch
+		time.Sleep(250 * time.Millisecond)
+		return g.motor.Position(ctx, nil)
 	}
-	// Short pause after stopping to increase the precision of the position of each limit switch
-	time.Sleep(250 * time.Millisecond)
-	position, err := g.motor.Position(ctx, nil)
-	return position, err
 }
 
 // this function may need to be run in the background upon initialisation of the ganty,
