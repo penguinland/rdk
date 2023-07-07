@@ -443,22 +443,21 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 		return g.motor.Position(ctx, nil)
 	}
 
-	defer utils.UncheckedErrorFunc(func() error {
-		return g.motor.Stop(ctx, nil)
-	})
-	wrongPin := 1
-	d := -1.0
-	if pin != 0 {
-		d = 1
-		wrongPin = 0
-	}
-	if err := g.motor.GoFor(ctx, d*g.rpm, 0, nil); err != nil {
-		return 0, err
-	}
-
 	// Give up after a sufficient amount of time.
 	timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 15 * time.Second)
 	defer timeoutCancel() // Clean up when we're done, even without waiting 15 seconds.
+
+	d := -1.0
+	if pin != 0 {
+		d = 1
+	}
+
+	defer utils.UncheckedErrorFunc(func() error {
+		return g.motor.Stop(ctx, nil)
+	})
+	if err := g.motor.GoFor(ctx, d*g.rpm, 0, nil); err != nil {
+		return 0, err
+	}
 
 	select {
 	case <-ctx.Done():
