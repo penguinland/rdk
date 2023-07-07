@@ -411,7 +411,7 @@ func (g *singleAxis) gantryToMotorSpeeds(speeds float64) float64 {
 func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 	// Start watching for interrupts on the pin
 	interruptPinName := g.limitSwitchPins[pin]
-	interruptPin, success := board.DigitalInterruptByName(interruptPinName)
+	interruptPin, success := g.board.DigitalInterruptByName(interruptPinName)
 	if !success {
 		return 0, fmt.Errorf("limit switch %s does not act like a digital interrupt",
 		                     interruptPinName)
@@ -429,7 +429,7 @@ func (g *singleAxis) testLimit(ctx context.Context, pin int) (float64, error) {
 	// dangerous zone. To get the current value of the switch, don't use interruptPin.Value():
 	// that's the total number of times it has hit an edge, not whether it's currently high or
 	// low. Instead, we want to get the GPIO value of the pin.
-	gpioPin, err := board.GPIOPinByName(interruptPinName)
+	gpioPin, err := g.board.GPIOPinByName(interruptPinName)
 	if err != nil {
 		return 0, err
 	}
