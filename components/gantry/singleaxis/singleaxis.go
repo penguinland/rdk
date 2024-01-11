@@ -249,22 +249,23 @@ func (g *singleAxis) Home(ctx context.Context, extra map[string]interface{}) (bo
 }
 
 func (g *singleAxis) checkHit(ctx context.Context) {
-	g.activeBackgroundWorkers.Add(1)
-	utils.PanicCapturingGo(func() {
-		defer utils.UncheckedErrorFunc(func() error {
-			g.mu.Lock()
-			defer g.mu.Unlock()
-			return g.motor.Stop(ctx, nil)
-		})
-		defer g.activeBackgroundWorkers.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
+	for i := 0; i < len(g.limitSwitchPins); i++ {
+		g.activeBackgroundWorkers.Add(1)
+		utils.PanicCapturingGo(func() {
+			defer utils.UncheckedErrorFunc(func() error {
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				return g.motor.Stop(ctx, nil)
+			})
+			defer g.activeBackgroundWorkers.Done()
 
-			for i := 0; i < len(g.limitSwitchPins); i++ {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				hit, err := g.limitHit(ctx, i)
 				if err != nil {
 					g.logger.CError(ctx, err)
@@ -286,8 +287,8 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 					g.mu.Unlock()
 				}
 			}
-		}
-	})
+		})
+	}
 }
 
 // Once a limit switch is hit in any move call (from the motor or the gantry component),
