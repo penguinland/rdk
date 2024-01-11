@@ -225,9 +225,7 @@ func (g *singleAxis) Reconfigure(ctx context.Context, deps resource.Dependencies
 	}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	g.cancelFunc = cancelFunc
-	g.checkHit(ctx)
-
-	return nil
+	return g.checkHit(ctx)
 }
 
 // Home runs the homing sequence of the gantry, starts checkHit in the background, and returns true once completed.
@@ -244,13 +242,34 @@ func (g *singleAxis) Home(ctx context.Context, extra map[string]interface{}) (bo
 	}
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	g.cancelFunc = cancelFunc
-	g.checkHit(ctx)
+	if err := g.checkHit(ctx); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
-func (g *singleAxis) checkHit(ctx context.Context) {
+func (g *singleAxis) checkHit(ctx context.Context) error {
 	// For each limit switch, spawn a goroutine to monitor it.
 	for i := 0; i < len(g.limitSwitchPins); i++ {
+		interruptPin, found := g.board.DigitalInterruptByName(g.limitSwitchPins[i])
+		if !found {
+			return fmt.Errorf("Unknown interrupt pin %s for limit switch", g.limitSwitchPins[i])
+		}
+
+		// We also need to get the current status of the pin when we start monitoring it. Calling
+		// `interruptPin.Value()` will give the number of times it has changed, not the current
+		// value. Instead, we grab the pin as a GPIOPin as well.
+		rawPin, err := g.board.GPIOPinByName(g.limitSwitchPins[i])
+		if err != nil {
+			return fmt.Errorf("Unable to find value of pin %s for limit switch",
+				g.limitSwitchPins[i])
+		}
+		initialValue, err := rawPin.Get(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("Unable to read value of pin %s for limit switch",
+				g.limitSwitchPins[i])
+		}
+
 		g.activeBackgroundWorkers.Add(1)
 		utils.PanicCapturingGo(func() {
 			defer utils.UncheckedErrorFunc(func() error {
@@ -260,34 +279,11 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 			})
 			defer g.activeBackgroundWorkers.Done()
 
-			interruptPin, found := g.board.DigitalInterruptByName(g.limitSwitchPins[i])
-			if !found {
-				g.logger.CError(ctx, fmt.Errorf("Unknown interrupt pin %s for limit switch",
-					g.limitSwitchPins[i]))
-				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
-				return
-			}
-
 			events := make(chan board.Tick)
 			interruptPin.AddCallback(events)
 			defer interruptPin.RemoveCallback(events)
 
-			// Check if we're already on the limit switch, and move away immediately if we are.
-			rawPin, err := g.board.GPIOPinByName(g.limitSwitchPins[i])
-			if err != nil {
-				g.logger.CError(ctx, fmt.Errorf("Unable to find value of pin %s for limit switch",
-					g.limitSwitchPins[i]))
-				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
-				return
-			}
-			value, err := rawPin.Get(ctx, nil)
-			if err != nil {
-				g.logger.CError(ctx, fmt.Errorf("Unable to read value of pin %s for limit switch",
-					g.limitSwitchPins[i]))
-				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
-				return
-			}
-			if value { // We're already on the limit switch. Back off immediately.
+			if initialValue { // We're already on the limit switch. Back off immediately.
 				g.moveAway(ctx, i, events)
 			}
 
@@ -318,6 +314,7 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 			}
 		})
 	}
+	return nil
 }
 
 // Once a limit switch is hit in any move call (from the motor or the gantry component),
