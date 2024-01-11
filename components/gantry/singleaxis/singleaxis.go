@@ -297,14 +297,14 @@ func (g *singleAxis) checkHit(ctx context.Context) error {
 						continue // Wait until we trip the switch.
 					}
 
-					child, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+					// If we get here, we've tripped the limit switch. Stop and back off.
+					child, _ := context.WithTimeout(ctx, 10*time.Millisecond)
 					g.mu.Lock()
 					if err := g.motor.Stop(ctx, nil); err != nil {
 						g.logger.CError(ctx, err)
 					}
 					g.mu.Unlock()
 					<-child.Done()
-					cancel()
 					g.mu.Lock()
 					if err := g.moveAway(ctx, i, events); err != nil {
 						g.logger.CError(ctx, err)
