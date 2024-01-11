@@ -249,6 +249,7 @@ func (g *singleAxis) Home(ctx context.Context, extra map[string]interface{}) (bo
 }
 
 func (g *singleAxis) checkHit(ctx context.Context) {
+	// For each limit switch, spawn a goroutine to monitor it.
 	for i := 0; i < len(g.limitSwitchPins); i++ {
 		g.activeBackgroundWorkers.Add(1)
 		utils.PanicCapturingGo(func() {
@@ -259,19 +260,47 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 			})
 			defer g.activeBackgroundWorkers.Done()
 
+			interruptPin, found := g.board.DigitalInterruptByName(g.limitSwitchPins[i])
+			if !found {
+				g.logger.CError(ctx, fmt.Errorf("Unknown interrupt pin %s for limit switch",
+					g.limitSwitchPins[i]))
+				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
+				return
+			}
+
+			events := make(chan board.Tick)
+			interruptPin.AddCallback(events)
+			defer interruptPin.RemoveCallback(events)
+
+			// Check if we're already on the limit switch, and move away immediately if we are.
+			rawPin, err := g.board.GPIOPinByName(g.limitSwitchPins[i])
+			if err != nil {
+				g.logger.CError(ctx, fmt.Errorf("Unable to find value of pin %s for limit switch",
+					g.limitSwitchPins[i]))
+				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
+				return
+			}
+			value, err := rawPin.Get(ctx, nil)
+			if err != nil {
+				g.logger.CError(ctx, fmt.Errorf("Unable to read value of pin %s for limit switch",
+					g.limitSwitchPins[i]))
+				// TODO: propagate this error higher. If we get here, the motor might be unsafe.
+				return
+			}
+			if value { // We're already on the limit switch. Back off immediately.
+				g.moveAway(ctx, i, events)
+			}
+
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				default:
-				}
+				case tick := <-events:
+					if !tick.High {
+						// Weird that we got notified that we're no longer on the limit switch!?
+						continue // Wait until we trip the switch.
+					}
 
-				hit, err := g.limitHit(ctx, i)
-				if err != nil {
-					g.logger.CError(ctx, err)
-				}
-
-				if hit {
 					child, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 					g.mu.Lock()
 					if err := g.motor.Stop(ctx, nil); err != nil {
@@ -281,7 +310,7 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 					<-child.Done()
 					cancel()
 					g.mu.Lock()
-					if err := g.moveAway(ctx, i); err != nil {
+					if err := g.moveAway(ctx, i, events); err != nil {
 						g.logger.CError(ctx, err)
 					}
 					g.mu.Unlock()
@@ -294,7 +323,7 @@ func (g *singleAxis) checkHit(ctx context.Context) {
 // Once a limit switch is hit in any move call (from the motor or the gantry component),
 // this function stops the motor, and reverses the direction of movement until the limit
 // switch is no longer activated.
-func (g *singleAxis) moveAway(ctx context.Context, pin int) error {
+func (g *singleAxis) moveAway(ctx context.Context, pin int, events chan board.Tick) error {
 	dir := 1.0
 	if pin != 0 {
 		dir = -1.0
@@ -306,16 +335,16 @@ func (g *singleAxis) moveAway(ctx context.Context, pin int) error {
 		return g.motor.Stop(ctx, nil)
 	})
 	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		hit, err := g.limitHit(ctx, pin)
-		if err != nil {
-			return err
-		}
-		if !hit {
-			if err := g.motor.Stop(ctx, nil); err != nil {
-				return err
+		select {
+		case <-ctx.Done():
+			return nil
+		case tick := <-events:
+			if tick.High {
+				// Weird that we got notified that we've just tripped the limit switch. Keep going
+				// until it's no longer tripped.
+				g.logger.Warnf("tried to back off of limit switch %s, but were notified that"+
+				               "we just moved onto it. Continuing...", pin)
+				continue
 			}
 			return nil
 		}
