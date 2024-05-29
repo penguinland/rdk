@@ -55,14 +55,11 @@ type localRobot struct {
 	localPackages           packages.ManagerSyncer
 	cloudConnSvc            icloud.ConnectionService
 	logger                  logging.Logger
-	activeBackgroundWorkers sync.WaitGroup
 	// reconfigureWorkers tracks goroutines spawned by reconfiguration functions. we only
 	// wait on this group in tests to prevent goleak-related failures. however, we do not
 	// wait on this group outside of testing, since the related goroutines may be running
 	// outside code and have unexpected behavior.
 	reconfigureWorkers         sync.WaitGroup
-	cancelBackgroundWorkers    func()
-	closeContext               context.Context
 	triggerConfig              chan struct{}
 	configTicker               *time.Ticker
 	revealSensitiveConfigDiffs bool
@@ -145,14 +142,10 @@ func (r *localRobot) Close(ctx context.Context) error {
 		// we may not have the web service if we closed prematurely
 		r.webSvc.Stop()
 	}
-	if r.cancelBackgroundWorkers != nil {
-		r.cancelBackgroundWorkers()
-		r.cancelBackgroundWorkers = nil
-		if r.configTicker != nil {
-			r.configTicker.Stop()
-		}
+	if r.workers != nil {
+		r.workers.Stop()
+		r.workers = nil
 	}
-	r.activeBackgroundWorkers.Wait()
 	r.sessionManager.Close()
 
 	var err error
@@ -410,8 +403,7 @@ func newWithResources(
 		),
 		operations:              operation.NewManager(logger),
 		logger:                  logger,
-		closeContext:            closeCtx,
-		cancelBackgroundWorkers: cancel,
+		workers:                    utils.StoppableWorkers,
 		// triggerConfig buffers 1 message so that we can queue up to 1 reconfiguration attempt
 		// (as long as there is 1 queued, further messages can be safely discarded).
 		triggerConfig:              make(chan struct{}, 1),
@@ -517,13 +509,12 @@ func newWithResources(
 		cfg.PackagePath,
 	)
 
-	r.activeBackgroundWorkers.Add(1)
 	r.configTicker = time.NewTicker(5 * time.Second)
 	// This goroutine tries to complete the config and update weak dependencies
 	// if any resources are not configured. It executes every 5 seconds or when
 	// manually triggered. Manual triggers are sent when changes in remotes are
 	// detected and in testing.
-	goutils.ManagedGo(func() {
+	r.workers = utils.NewStoppableWorkers(func(closeCtx context.Context) {
 		for {
 			if closeCtx.Err() != nil {
 				return
@@ -549,7 +540,7 @@ func newWithResources(
 				r.logger.CDebugw(ctx, "configuration attempt completed without changes")
 			}
 		}
-	}, r.activeBackgroundWorkers.Done)
+	})
 
 	r.Reconfigure(ctx, cfg)
 
