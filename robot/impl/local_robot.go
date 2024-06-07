@@ -55,6 +55,7 @@ type localRobot struct {
 	localPackages           packages.ManagerSyncer
 	cloudConnSvc            icloud.ConnectionService
 	logger                  logging.Logger
+	workers                 utils.StoppableWorkers
 	// reconfigureWorkers tracks goroutines spawned by reconfiguration functions. we only
 	// wait on this group in tests to prevent goleak-related failures. however, we do not
 	// wait on this group outside of testing, since the related goroutines may be running
@@ -401,8 +402,8 @@ func newWithResources(
 			},
 			logger,
 		),
-		operations:              operation.NewManager(logger),
-		logger:                  logger,
+		operations:                 operation.NewManager(logger),
+		logger:                     logger,
 		workers:                    utils.StoppableWorkers,
 		// triggerConfig buffers 1 message so that we can queue up to 1 reconfiguration attempt
 		// (as long as there is 1 queued, further messages can be safely discarded).
