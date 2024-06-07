@@ -390,7 +390,6 @@ func newWithResources(
 		opt.apply(&rOpts)
 	}
 
-	closeCtx, cancel := context.WithCancel(ctx)
 	r := &localRobot{
 		manager: newResourceManager(
 			resourceManagerOptions{
@@ -498,17 +497,6 @@ func newWithResources(
 	if rOpts.viamHomeDir != "" {
 		homeDir = rOpts.viamHomeDir
 	}
-	// Once web service is started, start module manager
-	r.manager.startModuleManager(
-		closeCtx,
-		r.webSvc.ModuleAddress(),
-		r.removeOrphanedResources,
-		cfg.UntrustedEnv,
-		homeDir,
-		cloudID,
-		logger,
-		cfg.PackagePath,
-	)
 
 	r.configTicker = time.NewTicker(5 * time.Second)
 	// This goroutine tries to complete the config and update weak dependencies
@@ -542,6 +530,18 @@ func newWithResources(
 			}
 		}
 	})
+
+	// Once web service is started, start module manager
+	r.manager.startModuleManager(
+		r.workers.Context(),
+		r.webSvc.ModuleAddress(),
+		r.removeOrphanedResources,
+		cfg.UntrustedEnv,
+		homeDir,
+		cloudID,
+		logger,
+		cfg.PackagePath,
+	)
 
 	r.Reconfigure(ctx, cfg)
 
