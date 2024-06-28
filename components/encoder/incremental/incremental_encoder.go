@@ -15,6 +15,7 @@ import (
 	"go.viam.com/rdk/components/encoder"
 	"go.viam.com/rdk/logging"
 	"go.viam.com/rdk/resource"
+	rdkutils "go.viam.com/rdk/utils"
 )
 
 var incrModel = resource.DefaultModelFamily.WithModel("incremental")
@@ -48,10 +49,8 @@ type Encoder struct {
 
 	logger logging.Logger
 
-	cancelCtx               context.Context
-	cancelFunc              func()
-	activeBackgroundWorkers sync.WaitGroup
-	positionType            encoder.PositionType
+	workers      rdkutils.StoppableWorkers
+	positionType encoder.PositionType
 }
 
 // Pins describes the configuration of Pins for a quadrature encoder.
@@ -92,12 +91,9 @@ func NewIncrementalEncoder(
 	conf resource.Config,
 	logger logging.Logger,
 ) (encoder.Encoder, error) {
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
 	e := &Encoder{
 		Named:        conf.ResourceName().AsNamed(),
 		logger:       logger,
-		cancelCtx:    cancelCtx,
-		cancelFunc:   cancelFunc,
 		position:     0,
 		positionType: encoder.PositionTypeTicks,
 		pRaw:         0,
@@ -148,9 +144,6 @@ func (e *Encoder) Reconfigure(
 		return nil
 	}
 	utils.UncheckedError(e.Close(ctx))
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-	e.cancelCtx = cancelCtx
-	e.cancelFunc = cancelFunc
 
 	e.mu.Lock()
 	e.A = encA
@@ -206,8 +199,14 @@ func (e *Encoder) Start(ctx context.Context, b board.Board) {
 	// 0 -> same state
 	// x -> impossible state
 
+	if e.workers != nil {
+		// This should never happen!
+		utils.Logger.Error("starting an already-started encoder! Stopping the old part first...")
+		e.workers.Stop()
+	}
+	e.workers = rdkutils.NewStoppableWorkers()
 	ch := make(chan board.Tick)
-	err := b.StreamTicks(e.cancelCtx, []board.DigitalInterrupt{e.A, e.B}, ch, nil)
+	err := b.StreamTicks(e.workers.Context(), []board.DigitalInterrupt{e.A, e.B}, ch, nil)
 	if err != nil {
 		utils.Logger.Errorw("error getting digital interrupt ticks", "error", err)
 		return
@@ -223,9 +222,7 @@ func (e *Encoder) Start(ctx context.Context, b board.Board) {
 	}
 	e.pState = aLevel | (bLevel << 1)
 
-	e.activeBackgroundWorkers.Add(1)
-
-	utils.ManagedGo(func() {
+	e.workers.AddWorkers(func(cancelCtx context.Context) {
 		for {
 			// This looks redundant with the other select statement below, but it's not: if we're
 			// supposed to return, we need to do that even if chanA and chanB are full of data, and
@@ -233,7 +230,7 @@ func (e *Encoder) Start(ctx context.Context, b board.Board) {
 			// statement guarantees that we'll return if we're supposed to, regardless of whether
 			// there's data in the other channels.
 			select {
-			case <-e.cancelCtx.Done():
+			case <-cancelCtx.Done():
 				return
 			default:
 			}
@@ -241,7 +238,7 @@ func (e *Encoder) Start(ctx context.Context, b board.Board) {
 			var tick board.Tick
 
 			select {
-			case <-e.cancelCtx.Done():
+			case <-cancelCtx.Done():
 				return
 			case tick = <-ch:
 				if tick.Name == e.encAName {
@@ -282,7 +279,7 @@ func (e *Encoder) Start(ctx context.Context, b board.Board) {
 			atomic.StoreInt64(&e.position, atomic.LoadInt64(&e.pRaw)>>1)
 			e.pState = nState
 		}
-	}, e.activeBackgroundWorkers.Done)
+	})
 }
 
 // Position returns the current position in terms of ticks or
@@ -323,9 +320,8 @@ func (e *Encoder) RawPosition() int64 {
 // Close shuts down the Encoder.
 func (e *Encoder) Close(ctx context.Context) error {
 	e.logger.Info("closing encoder")
-	e.cancelFunc()
-	e.logger.Info("cancelled context")
-	e.activeBackgroundWorkers.Wait()
+	e.workers.Stop()
+	e.workers = nil
 	e.logger.Info("background workers done")
 	return nil
 }
