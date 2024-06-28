@@ -157,13 +157,13 @@ func (e *Encoder) Reconfigure(
 	atomic.StoreInt64(&e.pState, 0)
 	e.mu.Unlock()
 
-	e.Start(ctx, board)
+	e.start(ctx, board)
 
 	return nil
 }
 
-// Start starts the Encoder background thread.
-func (e *Encoder) Start(ctx context.Context, b board.Board) {
+// start starts the Encoder background thread.
+func (e *Encoder) start(ctx context.Context, b board.Board) {
 	/**
 	  a rotary encoder looks like
 
