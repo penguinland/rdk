@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	apppb "go.viam.com/api/app/v1"
 	commonpb "go.viam.com/api/common/v1"
+	rdkutils "go.viam.com/rdk/utils"
 	"go.viam.com/utils"
 	"go.viam.com/utils/protoutils"
 	"go.viam.com/utils/rpc"
@@ -65,12 +66,8 @@ func newNetAppender(
 		loggerWithoutNet: loggerWithoutNet,
 	}
 
-	cancelCtx, cancel := context.WithCancel(context.Background())
-
 	nl := &NetAppender{
 		hostname:         hostname,
-		cancelCtx:        cancelCtx,
-		cancel:           cancel,
 		remoteWriter:     logWriter,
 		maxQueueSize:     defaultMaxQueueSize,
 		loggerWithoutNet: loggerWithoutNet,
@@ -79,8 +76,7 @@ func newNetAppender(
 	nl.SetConn(conn, sharedConn)
 
 	if startBackgroundWorker {
-		nl.activeBackgroundWorkers.Add(1)
-		utils.ManagedGo(nl.backgroundWorker, nl.activeBackgroundWorkers.Done)
+		nl.workers = rdkutils.NewStoppableWorkers(nl.backgroundWorker)
 	}
 	return nl, nil
 }
@@ -97,9 +93,7 @@ type NetAppender struct {
 
 	maxQueueSize int
 
-	cancelCtx               context.Context
-	cancel                  func()
-	activeBackgroundWorkers sync.WaitGroup
+	workers rdkutils.StoppableWorkers
 
 	// `loggerWithoutNet` is the logger to use for meta/internal logs
 	// from the `NetAppender`.
@@ -129,7 +123,7 @@ func (w *remoteLogWriterGRPC) setConn(ctx context.Context, logger Logger, conn r
 func (nl *NetAppender) SetConn(conn rpc.ClientConn, sharedConn bool) {
 	nl.toLogMutex.Lock()
 	defer nl.toLogMutex.Unlock()
-	nl.remoteWriter.setConn(nl.cancelCtx, nl.loggerWithoutNet, conn, sharedConn)
+	nl.remoteWriter.setConn(nl.workers.Context(), nl.loggerWithoutNet, conn, sharedConn)
 }
 
 func (nl *NetAppender) queueSize() int {
@@ -141,11 +135,8 @@ func (nl *NetAppender) queueSize() int {
 // cancelBackgroundWorkers is an internal function meant to be used only in testing and in Close(). NetAppender will
 // not function correctly if cancelBackgroundWorkers() is called outside of those contexts.
 func (nl *NetAppender) cancelBackgroundWorkers() {
-	if nl.cancel != nil {
-		nl.cancel()
-		nl.cancel = nil
-	}
-	nl.activeBackgroundWorkers.Wait()
+	nl.workers.Stop()
+	nl.workers = nil
 }
 
 // Close the NetAppender. This makes a best effort at sending all logs before returning.
@@ -163,7 +154,7 @@ func (nl *NetAppender) close(exitIfNoProgressIters, totalIters int, sleepFn func
 	prevQueue := nl.queueSize()
 	lastProgressIter := 0
 	sleepInterval := 10 * time.Millisecond
-	if nl.cancel != nil {
+	if nl.workers != nil {
 		// try for up to 10 seconds for log queue to clear before cancelling it
 		for i := 0; i < totalIters; i++ {
 			curQueue := nl.queueSize()
@@ -293,7 +284,9 @@ func (nl *NetAppender) backgroundWorker() {
 	abnormalInterval := 5 * time.Second
 	interval := normalInterval
 	for {
-		if !utils.SelectContextOrWait(nl.cancelCtx, interval) {
+		// We would only call nl.backgroundWorker() if nl.workers is initialized, so it's safe to
+		// use the Context() here.
+		if !utils.SelectContextOrWait(nl.workers.Context(), interval) {
 			return
 		}
 		err := nl.sync()
