@@ -1862,6 +1862,7 @@ func TestProperties(t *testing.T) {
 	t.Run("no map case", func(t *testing.T) {
 		svc := builtIn{
 			mapType: navigation.NoMap,
+			backgroundWorkers: utils.NewBackgroundStoppableWorkers(),
 		}
 
 		prop, err := svc.Properties(ctx)
@@ -1872,6 +1873,7 @@ func TestProperties(t *testing.T) {
 	t.Run("gps map case", func(t *testing.T) {
 		svc := builtIn{
 			mapType: navigation.GPSMap,
+			backgroundWorkers: utils.NewBackgroundStoppableWorkers(),
 		}
 
 		prop, err := svc.Properties(ctx)
