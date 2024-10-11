@@ -213,6 +213,7 @@ func NewBuiltIn(
 	navSvc := &builtIn{
 		Named:  conf.ResourceName().AsNamed(),
 		logger: logger,
+		backgroundWorkers: utils.NewBackgroundStoppableWorkers(),
 	}
 	if err := navSvc.Reconfigure(ctx, deps, conf); err != nil {
 		return nil, err
@@ -243,10 +244,9 @@ type builtIn struct {
 	replanCostFactor float64
 
 	logger                    logging.Logger
-	wholeServiceCancelFunc    func()
 	currentWaypointCancelFunc func()
 	waypointInProgress        *navigation.Waypoint
-	activeBackgroundWorkers   sync.WaitGroup
+	backgroundWorkers         *utils.StoppableWorkers
 }
 
 func (svc *builtIn) Reconfigure(ctx context.Context, deps resource.Dependencies, conf resource.Config) error {
@@ -431,8 +431,6 @@ func (svc *builtIn) SetMode(ctx context.Context, mode navigation.Mode, extra map
 	// switch modes
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	cancelCtx, cancelFunc := context.WithCancel(context.Background())
-	svc.wholeServiceCancelFunc = cancelFunc
 	svc.mode = mode
 
 	if !slices.Contains(availableModesByMapType[svc.mapType], svc.mode) {
@@ -443,7 +441,7 @@ func (svc *builtIn) SetMode(ctx context.Context, mode navigation.Mode, extra map
 	case navigation.ModeManual, navigation.ModeExplore:
 		// do nothing
 	case navigation.ModeWaypoint:
-		svc.startWaypointMode(cancelCtx, extra)
+		svc.startWaypointMode(extra)
 	}
 
 	return nil
@@ -599,15 +597,14 @@ func (svc *builtIn) moveToWaypoint(ctx context.Context, wp navigation.Waypoint, 
 	return svc.waypointReached(cancelCtx)
 }
 
-func (svc *builtIn) startWaypointMode(ctx context.Context, extra map[string]interface{}) {
+func (svc *builtIn) startWaypointMode(extra map[string]interface{}) {
 	if extra == nil {
 		extra = map[string]interface{}{}
 	}
 
 	extra["motion_profile"] = "position_only"
 
-	svc.activeBackgroundWorkers.Add(1)
-	utils.ManagedGo(func() {
+	svc.backgroundWorkers.Add(func(ctx context.Context) {
 		// do not exit loop - even if there are no waypoints remaining
 		for {
 			if ctx.Err() != nil {
@@ -636,14 +633,11 @@ func (svc *builtIn) startWaypointMode(ctx context.Context, extra map[string]inte
 			}
 			svc.logger.CInfof(ctx, "reached waypoint: %+v", wp)
 		}
-	}, svc.activeBackgroundWorkers.Done)
+	})
 }
 
 func (svc *builtIn) stopActiveMode() {
-	if svc.wholeServiceCancelFunc != nil {
-		svc.wholeServiceCancelFunc()
-	}
-	svc.activeBackgroundWorkers.Wait()
+	svc.backgroundWorkers.Stop()
 }
 
 func (svc *builtIn) waypointIsDeleted() bool {
