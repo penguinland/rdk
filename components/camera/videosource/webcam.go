@@ -190,8 +190,7 @@ func findReaderAndDriver(
 // webcam is a video driver wrapper camera that ensures its underlying driver stays connected.
 type webcam struct {
 	resource.Named
-	mu                      sync.RWMutex
-	hasLoggedIntrinsicsInfo bool
+	mu sync.RWMutex
 
 	cameraModel transform.PinholeCameraModel
 
@@ -264,8 +263,6 @@ func (c *webcam) Reconfigure(
 	if err := c.reconnectCamera(newConf); err != nil {
 		return err
 	}
-
-	c.hasLoggedIntrinsicsInfo = false
 
 	// only set once we're good
 	c.conf = *newConf
