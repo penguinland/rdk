@@ -219,6 +219,8 @@ func NewWebcam(
 ) (camera.Camera, error) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 
+	fmt.Printf("test")
+
 	cam := &webcam{
 		Named:     conf.ResourceName().AsNamed(),
 		logger:    logger.WithFields("camera_name", conf.ResourceName().ShortName()),
@@ -320,6 +322,7 @@ func (c *webcam) reconnectCamera(conf *WebcamConfig) error {
 // and once the resource is closed, so should the monitor. That is, it should
 // no longer send any resets once a Close on its associated resource has returned.
 func (c *webcam) Monitor() {
+	// TODO: refactor this entire function
 	const wait = 500 * time.Millisecond
 	c.activeBackgroundWorkers.Add(1)
 
